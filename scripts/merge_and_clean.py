@@ -1,24 +1,37 @@
 #!/usr/bin/env python
-"""Phase 2 - tabular merge, cleaning, and the modelling table.
+r"""Phase 2 - tabular merge, cleaning, and the modelling table.
 
-Produces data/processed/merged_dataset.csv: one row per transaction, enriched
-with the customer's (aggregated) social profile. Target = product_category.
+Produces data/processed/merged_dataset.csv: one row per transaction (for customers who
+have a social profile), enriched with that customer's aggregated social features.
 
-Design decisions (justified inline, mirrored in notebooks/01_eda_and_merge.ipynb):
+PREDICTION FRAMING (this drives every design choice).
+The model predicts the product a customer would buy "when visiting your social media
+sites" -- i.e. at social-visit time, BEFORE any purchase happens. So only the SOCIAL
+features are legitimately available as predictors; the transaction columns are
+post-purchase and must NOT feed the model (they would leak the outcome). Column roles:
 
-  Join key   : customer_social_profiles.customer_id_new is "A" + digits and
-               equals customer_transactions.customer_id_legacy once the "A" is
-               stripped. Verified: every id matches ^A\\d+$.
+    IDENTIFIERS     : customer_id, transaction_id
+    PREDICTORS      : avg_engagement, avg_purchase_interest, n_platforms,
+                      primary_platform, dominant_sentiment            (from social)
+    TARGET          : product_category                                (from transactions)
+    EXCLUDED (leak) : purchase_date, purchase_amount, customer_rating (post-purchase)
 
-  Grain      : social is one-to-many per customer (several platforms per person,
-               plus 5 exact duplicate rows); transactions is one-to-many per
-               customer (several purchases). A raw row-join would multiply rows,
-               so social is FIRST aggregated to one row per customer, THEN joined.
+All columns are kept in the CSV for reference/EDA, but Phase 5 must train on PREDICTORS
+only. The roles are exported as constants below so Phase 5 can import them directly.
 
-  Join type  : LEFT (transactions is the base). The target lives in transactions,
-               so we keep every transaction/label. Customers with no social row
-               get imputed social features plus has_social_profile = False, which
-               preserves all labels while flagging the imputation for the model.
+MERGE DESIGN.
+  Join key : customer_id_new ("A"+digits) == customer_id_legacy once "A" is stripped
+             (verified: every id matches ^A\d+$).
+  Grain    : social is one-to-many per customer (several platforms, plus 5 exact
+             duplicate rows and repeated (customer, platform) readings); transactions is
+             one-to-many per customer. Social is first AGGREGATED to one row per customer
+             -- only EXACT duplicate rows are dropped; repeated (customer, platform)
+             readings are summarised (mean / mode), not discarded -- then joined.
+  Join type: INNER. The task predicts FROM the social profile, so the modelling
+             population is exactly the customers who have a social profile AND purchased.
+             Inner join (a) matches that framing and (b) avoids fabricating the very
+             predictor features by imputation, which a LEFT join would force on the 14
+             customers (33 transactions) that have no social profile at all.
 """
 from __future__ import annotations
 
@@ -31,7 +44,16 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "data" / "processed" / "merged_dataset.csv"
 
-SENTIMENTS = ["Negative", "Neutral", "Positive"]
+# --- column roles (import these in Phase 5) ---
+IDENTIFIERS = ["customer_id", "transaction_id"]
+PREDICTORS = [
+    "avg_engagement", "avg_purchase_interest", "n_platforms",
+    "primary_platform", "dominant_sentiment",
+]
+TARGET = "product_category"
+EXCLUDED_LEAKAGE = ["purchase_date", "purchase_amount", "customer_rating"]
+
+COLUMN_ORDER = IDENTIFIERS + PREDICTORS + EXCLUDED_LEAKAGE + [TARGET]
 
 
 def _mode(series: pd.Series):
@@ -53,6 +75,10 @@ def clean_social(soc: pd.DataFrame) -> pd.DataFrame:
 
     assert soc["customer_id_new"].str.fullmatch(r"A\d+").all(), "unexpected id format"
     soc["customer_id"] = soc["customer_id_new"].str[1:].astype(int)
+
+    # Repeated (customer, platform) readings are kept and summarised, not treated as errors.
+    repeats = int(soc.duplicated(["customer_id", "social_media_platform"]).sum())
+    print(f"  social: {repeats} repeated (customer, platform) readings -> summarised, not dropped")
 
     agg = (
         soc.groupby("customer_id")
@@ -76,62 +102,51 @@ def clean_transactions(tx: pd.DataFrame) -> pd.DataFrame:
     print(f"  transactions: {tx.duplicated().sum()} exact duplicate rows")
     tx["customer_id"] = tx["customer_id_legacy"].astype(int)
 
+    # customer_rating is an EXCLUDED (post-purchase) column, but we still impute its 10
+    # nulls so the merged dataset is complete for EDA and the null-handling checks.
     n_null = int(tx["customer_rating"].isna().sum())
     median_rating = tx["customer_rating"].median()
     tx["customer_rating"] = tx["customer_rating"].fillna(median_rating)
-    print(f"  transactions: imputed {n_null} null customer_rating with median={median_rating}")
+    print(f"  transactions: imputed {n_null} null customer_rating with median={median_rating} (excluded feature)")
 
     tx["purchase_date"] = pd.to_datetime(tx["purchase_date"])
     return tx
 
 
 def merge(tx: pd.DataFrame, soc_agg: pd.DataFrame) -> pd.DataFrame:
-    merged = tx.merge(soc_agg, on="customer_id", how="left", indicator=True)
-    merged["has_social_profile"] = merged["_merge"].eq("both")
-    merged = merged.drop(columns="_merge")
-
-    # Impute social features for transactions whose customer has no social row.
-    merged["n_platforms"] = merged["n_platforms"].fillna(0).astype(int)
-    for col in ["avg_engagement", "avg_purchase_interest"]:
-        merged[col] = merged[col].fillna(round(soc_agg[col].mean(), 2))
-    for col in ["primary_platform", "dominant_sentiment"]:
-        merged[col] = merged[col].fillna("Unknown")
-
-    # Final tidy dtypes.
+    """INNER join: keep only transactions whose customer has a social profile."""
+    merged = tx.merge(soc_agg, on="customer_id", how="inner")
     for col in ["product_category", "primary_platform", "dominant_sentiment"]:
         merged[col] = merged[col].astype("category")
-
-    ordered = [
-        "customer_id", "transaction_id", "purchase_date", "purchase_amount",
-        "customer_rating", "avg_engagement", "avg_purchase_interest",
-        "n_platforms", "primary_platform", "dominant_sentiment",
-        "has_social_profile", "product_category",
-    ]
-    return merged[ordered]
+    return merged[COLUMN_ORDER]
 
 
-def validate(tx: pd.DataFrame, merged: pd.DataFrame) -> None:
+def validate(tx: pd.DataFrame, soc_agg: pd.DataFrame, merged: pd.DataFrame) -> None:
     print("\n  --- post-merge validation ---")
-    print(f"  rows: transactions={len(tx)}  merged={len(merged)}  (equal => no row explosion)")
-    assert len(merged) == len(tx), "row count changed: the join exploded"
+    expected = int(tx["customer_id"].isin(set(soc_agg["customer_id"])).sum())
+    dropped = len(tx) - len(merged)
+    print(f"  rows: transactions={len(tx)} -> merged={len(merged)}  "
+          f"(inner join dropped {dropped} transactions from customers with no social profile)")
+    assert len(merged) == expected, "row count != number of transactions with a social profile"
     assert merged["transaction_id"].is_unique, "transaction_id no longer unique"
+    assert merged["primary_platform"].notna().all(), "a social feature is missing"
 
     nulls = merged.isna().sum()
     nulls = nulls[nulls > 0]
     print(f"  remaining nulls: {dict(nulls) if len(nulls) else 'none'}")
     assert nulls.empty, "unexpected nulls after cleaning"
 
-    n_social = int(merged["has_social_profile"].sum())
-    print(f"  transactions with real social profile: {n_social}/{len(merged)} "
-          f"({100 * n_social / len(merged):.0f}%); imputed: {len(merged) - n_social}")
-
     # spot-check one customer: merged social features must match the aggregation
-    cid = merged.loc[merged["has_social_profile"], "customer_id"].iloc[0]
-    print(f"  spot-check customer {cid}:")
-    print(merged[merged["customer_id"] == cid][
-        ["transaction_id", "product_category", "avg_engagement", "primary_platform", "dominant_sentiment"]
-    ].to_string(index=False))
+    cid = merged["customer_id"].iloc[0]
+    src = soc_agg[soc_agg["customer_id"] == cid][["avg_engagement", "primary_platform"]].iloc[0]
+    got = merged[merged["customer_id"] == cid][["avg_engagement", "primary_platform"]].iloc[0]
+    print(f"  spot-check customer {cid}: agg={src.to_dict()} == merged={got.to_dict()} "
+          f"-> {bool((src.values == got.values).all())}")
 
+    print("  column roles:")
+    print(f"    predictors : {PREDICTORS}")
+    print(f"    target     : {TARGET}")
+    print(f"    excluded   : {EXCLUDED_LEAKAGE}  (post-purchase - not model inputs)")
     print("\n  target (product_category) distribution:")
     print(merged["product_category"].value_counts().to_string())
 
@@ -142,7 +157,7 @@ def main() -> None:
     soc_agg = clean_social(soc)
     tx = clean_transactions(tx)
     merged = merge(tx, soc_agg)
-    validate(tx, merged)
+    validate(tx, soc_agg, merged)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(OUT, index=False)
