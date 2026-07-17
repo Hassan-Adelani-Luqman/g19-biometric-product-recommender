@@ -1,0 +1,28 @@
+# Group 19 — Multimodal Auth & Product Recommendation System
+# Pinned against Python 3.12. Do NOT use Python 3.14 — numba/llvmlite (via librosa)
+# and mediapipe do not ship 3.14 wheels yet. See PLAN.md §8 Phase 0.
+# Versions below are the resolved set that installed and imported cleanly on 3.12.10.
+
+# Tabular / ML
+pandas==3.0.3
+numpy==2.4.6
+scikit-learn==1.9.0
+xgboost==3.3.0
+joblib==1.5.3
+
+# Plotting
+matplotlib==3.11.0
+seaborn==0.13.2
+
+# Image pipeline
+opencv-python==5.0.0.93
+Pillow==12.3.0
+mediapipe==0.10.35
+scikit-image==0.26.0
+
+# Audio pipeline
+librosa==0.11.0
+soundfile==0.14.0
+
+# Notebooks
+jupyter==1.1.1
