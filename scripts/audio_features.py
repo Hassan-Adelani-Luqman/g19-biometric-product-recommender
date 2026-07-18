@@ -40,8 +40,9 @@ MEMBERS = [
     "Yvette_Uwimpaye",
 ]
 
-# Non-feature columns (excluded by the model).
-META_COLUMNS = ["member", "phrase", "source_clip_id", "variant"]
+# Non-feature columns (excluded by the model). `augmented` is the boolean flag
+# PLAN.md asks for; `variant` keeps the specific kind (original/pitch_up/...).
+META_COLUMNS = ["member", "phrase", "source_clip_id", "variant", "augmented"]
 
 # Canonical, ordered feature columns. The CSV and the model both rely on this order.
 FEATURE_COLUMNS = (
@@ -136,7 +137,8 @@ def build_table(save_aug: bool = True) -> pd.DataFrame:
             # original
             rows.append({
                 "member": member, "phrase": phrase,
-                "source_clip_id": source_clip_id, "variant": "original",
+                "source_clip_id": source_clip_id,
+                "variant": "original", "augmented": False,
                 **extract_features(y, SR),
             })
 
@@ -144,7 +146,8 @@ def build_table(save_aug: bool = True) -> pd.DataFrame:
             for variant, y_aug in augment(y, SR).items():
                 rows.append({
                     "member": member, "phrase": phrase,
-                    "source_clip_id": source_clip_id, "variant": variant,
+                    "source_clip_id": source_clip_id,
+                    "variant": variant, "augmented": True,
                     **extract_features(y_aug, SR),
                 })
                 if save_aug:  # write augmented WAV (gitignored) for inspection
