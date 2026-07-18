@@ -43,7 +43,9 @@ PRODUCT_MODEL = ROOT / "models" / "product_model.joblib"
 def voice_identity(audio_path: Path, bundle: dict) -> tuple[str, float]:
     """Return (predicted speaker, confidence) for a voice clip."""
     feats = extract_features_for_file(audio_path)
-    frame = pd.DataFrame([feats])[bundle["feature_columns"]]
+    # select columns in the trained order, then pass a bare array: the voice model's
+    # scaler was fitted on a numpy array, so a named DataFrame would warn.
+    frame = pd.DataFrame([feats])[bundle["feature_columns"]].to_numpy()
     proba = bundle["model"].predict_proba(frame)[0]
     idx = int(np.argmax(proba))
     return str(bundle["model"].classes_[idx]), float(proba[idx])
