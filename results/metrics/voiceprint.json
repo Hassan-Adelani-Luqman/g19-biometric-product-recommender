@@ -1,6 +1,7 @@
 {
   "model": "voiceprint",
-  "algorithm": "RandomForestClassifier(n_estimators=300)",
+  "algorithm": "LogisticRegression(C=0.5) on standardized MFCC mean/std + rolloff + RMS",
+  "n_model_features": 30,
   "n_source_clips": 8,
   "n_rows_total": 32,
   "classes": [
@@ -9,17 +10,19 @@
     "Mahlet_Assefa_Tilahun",
     "Yvette_Uwimpaye"
   ],
-  "decision_threshold": 0.5,
+  "decision_threshold": 0.4516,
+  "threshold_rule": "10th percentile of out-of-fold confidence on correct genuine predictions",
+  "genuine_acceptance_rate": 0.8889,
   "split": "phrase_held_out (train=yes_approve, test=confirm_transaction)",
-  "accuracy": 0.6875,
-  "f1_macro": 0.6032,
-  "log_loss": 0.8471,
+  "accuracy": 0.9375,
+  "f1_macro": 0.9365,
+  "log_loss": 0.3842,
   "n_train_rows": 16,
   "n_test_rows": 16,
   "cross_val_logo": {
     "method": "leave_one_clip_out_cv",
-    "accuracy_mean": 0.5,
-    "accuracy_std": 0.3536,
+    "accuracy_mean": 0.8438,
+    "accuracy_std": 0.2778,
     "n_folds": 8
   }
 }
