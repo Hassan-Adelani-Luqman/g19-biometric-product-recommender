@@ -1,125 +1,147 @@
-import time
-import os
+#!/usr/bin/env python
+"""Phase 6 - Multimodal authentication + product recommendation CLI.
 
-# =====================================================================
-# 1. PLACEHOLDER FUNCTIONS (To be updated when members finish)
-# =====================================================================
+Replicates the assignment flowchart exactly:
 
-def run_face_recognition(image_path):
-    """
-    MOCK FACIAL RECOGNITION
-    Member 2 (Vision Lead) will eventually replace this with code that loads 
-    their trained model (.pkl) and runs prediction on the image features.
-    """
-    print(f"🤖 [Vision Model] Analyzing facial features from: {image_path}...")
-    time.sleep(1.5)
-    
-    # Mock Logic: Assume if the filename contains 'stranger' or 'unauthorized', it fails.
-    if "stranger" in image_path.lower() or "unauthorized" in image_path.lower():
-        return False, "Unknown User"
-    
-    # Simulating a successful match with a group member
-    return True, "Authorized_Member"
+    face image --> Facial Recognition --fail--> ACCESS DENIED
+                                       --pass--> Product Recommendation (held)
+    voice clip --> Voice Validation ----fail--> ACCESS DENIED
+                   (low confidence OR predicted speaker != recognised face)
+                                    ----pass--> display the predicted product
 
+The identity cross-check is the point of the multimodal design: an approved voice only
+unlocks the transaction if it belongs to the SAME member the face was recognised as.
 
-def run_voice_verification(audio_path, expected_user):
-    """
-    MOCK VOICEPRINT VERIFICATION
-    Member 3 (Audio Lead) will eventually replace this with code that loads 
-    their voice model and verifies if the voice matches the recognized face.
-    """
-    print(f"🎙️ [Audio Model] Verifying voiceprint for {expected_user} using: {audio_path}...")
-    time.sleep(1.5)
-    
-    # Mock Logic: Assume if the filename contains 'wrong' or 'unauthorized', it fails.
-    if "wrong" in audio_path.lower() or "unauthorized" in audio_path.lower():
-        return False
-        
-    return True
+Usage:
+    python scripts/app.py --face <image> --voice <audio.wav>
+    python scripts/app.py                      # prompts for the two paths
 
+Exit codes: 0 = access granted, 1 = access denied, 3 = bad input file.
+"""
+from __future__ import annotations
 
-def run_product_recommendation(user_name):
-    """
-    MOCK PRODUCT RECOMMENDATION
-    Member 1 (Data Lead) will replace this with their trained recommendation model
-    trained on the merged tabular customer data.
-    """
-    print(f"📊 [Recommendation Model] Querying transaction patterns for {user_name}...")
-    time.sleep(1)
-    
-    # Return a mock prediction output suitable for a social media / activewear catalog
-    return "Premium Athletic Running Shoes & Gym Apparels Pack"
+import argparse
+import sys
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+
+SCRIPTS = Path(__file__).resolve().parent
+ROOT = SCRIPTS.parent
+sys.path.insert(0, str(SCRIPTS))
+
+from train_face_model import predict_face             # noqa: E402
+from audio_features import extract_features_for_file  # noqa: E402
+
+FACE_MODEL = ROOT / "models" / "face_model.joblib"
+VOICE_MODEL = ROOT / "models" / "voice_model.joblib"
+PRODUCT_MODEL = ROOT / "models" / "product_model.joblib"
 
 
-# =====================================================================
-# 2. CORE MULTIMODAL INTEGRATION LOGIC (Your Main Rubric Task)
-# =====================================================================
-
-def execute_multimodal_transaction(image_input, audio_input):
-    """
-    Executes the sequential security checkpoints before granting access 
-    to the product prediction engine.
-    """
-    print("\n" + "="*60)
-    print("🔒 SYSTEM INITIALIZATION: SECURE TRANSACTION GATEWAY")
-    print("="*60)
-    time.sleep(0.5)
-    
-    # STEP 1: Face Check
-    print("\n[CHECKPOINT 1/3] Initiating Facial Recognition...")
-    face_authenticated, detected_user = run_face_recognition(image_input)
-    
-    if not face_authenticated:
-        print("\n❌ ACCESS DENIED: Face verification failed.")
-        print("⛔ System Flow Terminated: Unauthorized User Detected.")
-        print("="*60 + "\n")
-        return False
-        
-    print(f"✅ FACE VERIFIED: Profile match found for user: [{detected_user}].")
-    
-    # STEP 2: Voice Check
-    print("\n[CHECKPOINT 2/3] Initiating Voiceprint Validation...")
-    voice_authenticated = run_voice_verification(audio_input, detected_user)
-    
-    if not voice_authenticated:
-        print("\n❌ ACCESS DENIED: Voice signature does not match profile.")
-        print("⛔ System Flow Terminated: Security Checkpoint Failure.")
-        print("="*60 + "\n")
-        return False
-        
-    print("✅ VOICE VERIFIED: Transaction confirmation phrase approved.")
-    
-    # STEP 3: Recommendation Model
-    print("\n[CHECKPOINT 3/3] Authorization Granted. Running Product Prediction...")
-    recommended_product = run_product_recommendation(detected_user)
-    
-    print("\n" + "🎉" * 15)
-    print(f"✨ SUCCESSFUL TRANSACTION EXECUTION! ✨")
-    print(f"Recommended Item for User: {recommended_product}")
-    print("🎉" * 15)
-    print("="*60 + "\n")
-    return True
+def voice_identity(audio_path: Path, bundle: dict) -> tuple[str, float]:
+    """Return (predicted speaker, confidence) for a voice clip."""
+    feats = extract_features_for_file(audio_path)
+    frame = pd.DataFrame([feats])[bundle["feature_columns"]]
+    proba = bundle["model"].predict_proba(frame)[0]
+    idx = int(np.argmax(proba))
+    return str(bundle["model"].classes_[idx]), float(proba[idx])
 
 
-# =====================================================================
-# 3. SYSTEM SIMULATION RUNNER (Fulfills the Live Demo Requirement)
-# =====================================================================
+def product_for(identity: str, bundle: dict) -> dict | None:
+    """Look up the member's demo customer record and predict their product."""
+    record = bundle["member_demo_records"].get(identity)
+    if record is None:
+        return None
+    frame = pd.DataFrame([record["predictors"]])[bundle["predictors"]]
+    proba = bundle["pipeline"].predict_proba(frame)[0]
+    idx = int(np.argmax(proba))
+    return {
+        "customer_id": record["customer_id"],
+        "product": str(bundle["pipeline"].classes_[idx]),
+        "confidence": float(proba[idx]),
+    }
+
+
+def deny(reason: str) -> int:
+    print(f"\n>>> ACCESS DENIED - {reason}")
+    return 1
+
+
+def run(face_path: Path, voice_path: Path) -> int:
+    print("=" * 58)
+    print("  Multimodal Auth & Product Recommendation")
+    print("=" * 58)
+
+    # --- Step 1: Facial Recognition ---
+    print(f"\n[1] Facial Recognition   (image: {face_path.name})")
+    try:
+        face = predict_face(face_path, FACE_MODEL)
+    except Exception as error:
+        print(f"    could not process image: {error}")
+        return deny("face image unreadable / no face detected")
+    print(f"    identity   : {face['identity']}")
+    print(f"    confidence : {face['confidence']:.2f}  (threshold {face['threshold']:.2f})")
+    if not face["accepted"]:
+        return deny("face not recognised (confidence below threshold)")
+    identity = face["identity"]
+    print("    -> PASS")
+
+    # --- Step 2: Product Recommendation (held until voice passes) ---
+    print("\n[2] Product Recommendation   (held)")
+    product_bundle = joblib.load(PRODUCT_MODEL)
+    product = product_for(identity, product_bundle)
+    if product is None:
+        return deny(f"no customer record mapped for {identity}")
+    print(f"    {identity} -> customer {product['customer_id']} -> "
+          f"'{product['product']}'  (not shown yet)")
+
+    # --- Step 3: Voice Validation + identity cross-check ---
+    print(f"\n[3] Voice Validation   (audio: {voice_path.name})")
+    voice_bundle = joblib.load(VOICE_MODEL)
+    try:
+        speaker, vconf = voice_identity(voice_path, voice_bundle)
+    except Exception as error:
+        print(f"    could not process audio: {error}")
+        return deny("audio unreadable")
+    vthr = float(voice_bundle["threshold"])
+    print(f"    speaker    : {speaker}")
+    print(f"    confidence : {vconf:.2f}  (threshold {vthr:.2f})")
+    if vconf < vthr:
+        return deny("voice confidence below threshold")
+    if speaker != identity:
+        print(f"    identity   : voice '{speaker}' != face '{identity}'")
+        return deny("voice does not match the recognised face")
+    print(f"    identity   : voice == face ({identity})  OK")
+    print("    -> PASS")
+
+    # --- Access granted ---
+    print("\n" + "=" * 58)
+    print("  ACCESS GRANTED")
+    print("=" * 58)
+    print(f"  Member            : {identity}")
+    print(f"  Predicted product : {product['product']}  "
+          f"(model confidence {product['confidence']:.2f})")
+    return 0
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Multimodal auth + product recommendation")
+    parser.add_argument("--face", type=Path, help="path to a face image")
+    parser.add_argument("--voice", type=Path, help="path to a voice .wav")
+    args = parser.parse_args()
+
+    face_path = args.face or Path(input("Face image path: ").strip())
+    voice_path = args.voice or Path(input("Voice audio path: ").strip())
+    if not face_path.exists():
+        print(f"face image not found: {face_path}")
+        sys.exit(3)
+    if not voice_path.exists():
+        print(f"voice audio not found: {voice_path}")
+        sys.exit(3)
+    sys.exit(run(face_path, voice_path))
+
 
 if __name__ == "__main__":
-    print("🚀 Starting Multimodal System Pipeline Mock Tool...")
-    
-    # 🧪 TEST CASE A: Simulate an Unauthorized Intruder
-    # This checks the "Access Denied" pathway required by your instructions.
-    print("\n⚠️ RUNNING TEST SCENARIO A: UNAUTHORIZED ATTEMPT")
-    execute_multimodal_transaction(
-        image_input="stranger_face.jpg", 
-        audio_input="wrong_voice.wav"
-    )
-    
-    # 🧪 TEST CASE B: Simulate a Valid Full Transaction Workflow
-    # This checks the complete successful end-to-end loop.
-    print("\n⚠️ RUNNING TEST SCENARIO B: AUTHORIZED FULL TRANSACTION")
-    execute_multimodal_transaction(
-        image_input="authorized_member_neutral.jpg", 
-        audio_input="correct_phrase_confirm.wav"
-    )
+    main()
