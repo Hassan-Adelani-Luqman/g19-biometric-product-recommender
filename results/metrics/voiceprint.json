@@ -1,0 +1,19 @@
+{
+  "model": "voiceprint",
+  "algorithm": "RandomForestClassifier(n_estimators=300)",
+  "n_source_clips": 8,
+  "n_rows_total": 32,
+  "classes": [
+    "Gentil_Tonny_Christian_Iradukunda",
+    "Hassan_Adelani_Luqman",
+    "Mahlet_Assefa_Tilahun",
+    "Yvette_Uwimpaye"
+  ],
+  "decision_threshold": 0.5,
+  "split": "phrase_held_out (train=yes_approve, test=confirm_transaction)",
+  "accuracy": 0.6875,
+  "f1_macro": 0.6032,
+  "log_loss": 0.7954,
+  "n_train_rows": 16,
+  "n_test_rows": 16
+}
