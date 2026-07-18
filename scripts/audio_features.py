@@ -32,6 +32,7 @@ OUT_CSV = ROOT / "data" / "processed" / "audio_features.csv"
 SR = 16_000          # load / resample every clip to 16 kHz mono
 N_MFCC = 13
 TRIM_DB = 25         # trim silence quieter than this
+TARGET_RMS = 0.05    # normalise every clip to this loudness before feature extraction
 
 MEMBERS = [
     "Gentil_Tonny_Christian_Iradukunda",
@@ -44,10 +45,16 @@ MEMBERS = [
 # PLAN.md asks for; `variant` keeps the specific kind (original/pitch_up/...).
 META_COLUMNS = ["member", "phrase", "source_clip_id", "variant", "augmented"]
 
+# MFCCs plus their 1st- and 2nd-order time derivatives (deltas). The deltas capture
+# how the voice changes over time, which helps separate speakers.
+MFCC_BLOCKS = ("mfcc", "mfcc_delta", "mfcc_delta2")
+
 # Canonical, ordered feature columns. The CSV and the model both rely on this order.
 FEATURE_COLUMNS = (
-    [f"mfcc_{i}_mean" for i in range(1, N_MFCC + 1)]
-    + [f"mfcc_{i}_std" for i in range(1, N_MFCC + 1)]
+    [f"{blk}_{i}_{stat}"
+     for blk in MFCC_BLOCKS
+     for i in range(1, N_MFCC + 1)
+     for stat in ("mean", "std")]
     + ["rolloff_mean", "rolloff_std",
        "rms_mean", "rms_std",
        "zcr_mean", "zcr_std",
@@ -68,11 +75,23 @@ def detect_phrase(stem: str) -> str:
     return "unknown_phrase"
 
 
+def normalize_loudness(y: np.ndarray, target_rms: float = TARGET_RMS) -> np.ndarray:
+    """Scale a signal to a fixed RMS so quiet and loud clips are comparable."""
+    rms = float(np.sqrt(np.mean(y ** 2)))
+    if rms < 1e-8:                 # essentially silence -> leave as-is
+        return y
+    y = y * (target_rms / rms)
+    peak = float(np.abs(y).max())
+    if peak > 1.0:                 # guard against clipping after scaling
+        y = y / peak
+    return y
+
+
 def load_clip(path: Path) -> np.ndarray:
-    """Load a WAV as mono 16 kHz and trim silence."""
+    """Load a WAV as mono 16 kHz, trim silence, and normalize loudness."""
     y, _ = librosa.load(path, sr=SR, mono=True)
     y, _ = librosa.effects.trim(y, top_db=TRIM_DB)
-    return y
+    return normalize_loudness(y)
 
 
 def augment(y: np.ndarray, sr: int = SR) -> dict[str, np.ndarray]:
@@ -86,18 +105,33 @@ def augment(y: np.ndarray, sr: int = SR) -> dict[str, np.ndarray]:
     }
 
 
+def _mfcc_delta(mfcc: np.ndarray, order: int) -> np.ndarray:
+    """Delta of an MFCC matrix, with the window shrunk for very short clips."""
+    n_frames = mfcc.shape[1]
+    if n_frames < 3:                                    # too short to differentiate
+        return np.zeros_like(mfcc)
+    width = min(9, n_frames if n_frames % 2 else n_frames - 1)
+    return librosa.feature.delta(mfcc, order=order, width=width)
+
+
 def extract_features(y: np.ndarray, sr: int = SR) -> dict[str, float]:
     """Turn a signal into the fixed dict of features in FEATURE_COLUMNS."""
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)          # (13, frames)
+    blocks = {
+        "mfcc": mfcc,
+        "mfcc_delta": _mfcc_delta(mfcc, order=1),
+        "mfcc_delta2": _mfcc_delta(mfcc, order=2),
+    }
     rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)          # (1, frames)
     rms = librosa.feature.rms(y=y)                                  # (1, frames)
     zcr = librosa.feature.zero_crossing_rate(y)                     # (1, frames)
     centroid = librosa.feature.spectral_centroid(y=y, sr=sr)        # (1, frames)
 
     feats: dict[str, float] = {}
-    for i in range(N_MFCC):
-        feats[f"mfcc_{i + 1}_mean"] = float(mfcc[i].mean())
-        feats[f"mfcc_{i + 1}_std"] = float(mfcc[i].std())
+    for name, block in blocks.items():
+        for i in range(N_MFCC):
+            feats[f"{name}_{i + 1}_mean"] = float(block[i].mean())
+            feats[f"{name}_{i + 1}_std"] = float(block[i].std())
     feats["rolloff_mean"] = float(rolloff.mean())
     feats["rolloff_std"] = float(rolloff.std())
     feats["rms_mean"] = float(rms.mean())

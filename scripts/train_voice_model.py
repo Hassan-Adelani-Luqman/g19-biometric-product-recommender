@@ -94,7 +94,7 @@ def evaluate_cv(df, classes):
 
     accs = np.array(accs) if accs else np.array([float("nan")])
     return {
-        "split": "leave_one_clip_out_cv (fallback)",
+        "method": "leave_one_clip_out_cv",
         "accuracy_mean": round(float(np.nanmean(accs)), 4),
         "accuracy_std": round(float(np.nanstd(accs)), 4),
         "n_folds": int(len(accs)),
@@ -116,10 +116,12 @@ def main() -> None:
         print("Add the other members' clips, then re-run. Saving a model anyway so "
               "the pipeline is exercised end-to-end.")
 
-    # evaluate
+    # evaluate: phrase-held-out is the headline (text-independent); leave-one-clip-out
+    # CV is reported alongside it so the tiny-n variance is visible, not hidden.
     train, test = phrase_held_out(df)
     if train is not None and len(classes) >= 2:
         metrics = evaluate_holdout(train, test, classes)
+        metrics["cross_val_logo"] = evaluate_cv(df, classes)
     else:
         metrics = evaluate_cv(df, classes)
     print("Evaluation:", json.dumps(metrics, indent=2))

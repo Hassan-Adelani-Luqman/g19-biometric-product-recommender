@@ -13,7 +13,13 @@
   "split": "phrase_held_out (train=yes_approve, test=confirm_transaction)",
   "accuracy": 0.6875,
   "f1_macro": 0.6032,
-  "log_loss": 0.7954,
+  "log_loss": 0.8471,
   "n_train_rows": 16,
-  "n_test_rows": 16
+  "n_test_rows": 16,
+  "cross_val_logo": {
+    "method": "leave_one_clip_out_cv",
+    "accuracy_mean": 0.5,
+    "accuracy_std": 0.3536,
+    "n_folds": 8
+  }
 }
